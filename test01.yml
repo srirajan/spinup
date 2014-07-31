@@ -1,0 +1,19 @@
+--- 
+creds:
+  username: 
+  api_key: 
+  region: 
+
+server:
+  image: Chris
+  flavor: Dumars
+  sshkey_name: 
+  network_names:
+  test:
+    - ping: yes
+    - url: /test.html
+  build_timeout: 300
+  total_timeout: 1500
+  total: 5
+  delete_failed: yes
+  rackconnect: no
