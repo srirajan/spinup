@@ -5,15 +5,18 @@ creds:
   region: 
 
 server:
-  image: Chris
-  flavor: Dumars
-  sshkey_name: 
+  image: a84b1592-6817-42da-a57c-3c13f3cfc1da
+  flavor: performance1-1
+  sshkey_name: sri-key
   network_names:
   test:
     - ping: yes
-    - url: /test.html
+    - ssh_rdp: no
+    - url: 
   build_timeout: 300
   total_timeout: 1500
-  total: 5
+  count: 1
   delete_failed: yes
+  delete_success: yes
   rackconnect: no
+  stats_file:
