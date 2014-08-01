@@ -9,13 +9,14 @@ server:
   flavor: performance1-1
   sshkey_name: sri-key
   network_names:
-  test:
-    - ping: yes
-    - ssh_rdp: no
-    - url: 
+  tests:
+    ports: 22
+    url: 
   build_timeout: 300
   total_timeout: 1500
-  count: 1
+  check_interval: 30
+  desired_count: 1
+  error_prediction_pct: 0
   delete_failed: yes
   delete_success: yes
   rackconnect: no
