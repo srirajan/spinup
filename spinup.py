@@ -85,6 +85,7 @@ class spinup:
 
         if self.template_args['server']['tests']['url'] is not None:
             print "__NOT_IMPLEMENTED__"
+
         return(tests_passed)
 
     def cleanup_build(self):
@@ -126,6 +127,7 @@ class spinup:
                 stats = open(template_args['server']['stats_file'], 'w')
                 stats.write('image_name,image_id,flavor_id,'
                             'build_status,build_time')
+
             for s in self.server_list:
                 stats.write("%s,%s,%s,%s,%s\n" % (
                             s['image_name'],
