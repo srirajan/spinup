@@ -25,9 +25,8 @@ import random
 import math
 import time
 import socket
-
-logging.basicConfig(filename="spinup.log", level=logging.DEBUG,
-                    format='%(asctime)s [%(levelname)s] %(message)s')
+import prettytable
+import os.path
 
 
 class spinup:
@@ -57,14 +56,19 @@ class spinup:
                      chars=string.ascii_lowercase + string.digits):
         return ''.join(random.choice(chars) for x in range(size))
 
-    def get_server_os(self):
-        print "__NOT_IMPLEMENTED__"
+    def get_image_name(self, image_id):
+        imgs = self.cs.images.list()
+        for img in imgs:
+            if img.id == image_id:
+                return img.name
+        return 'NOTFOUND'
 
     def get_rackconnect_ip(self):
         print "__NOT_IMPLEMENTED__"
 
     def health_check(self, ip):
         if self.template_args['server']['tests']['ports'] is not None:
+            tests_passed = True
             port_list = str(self.template_args['server']['tests']['ports']).split(",")
             for p in port_list:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -76,21 +80,59 @@ class spinup:
                 else:
                     logging.info("Health check for IP %s ,"
                                  " port %s failed" % (ip, p))
+                    tests_passed = False
                 s.close()
-        sys.exit(0)
+
+        if self.template_args['server']['tests']['url'] is not None:
+            print "__NOT_IMPLEMENTED__"
+        return(tests_passed)
 
     def cleanup_build(self):
         for s in self.server_list:
-            print s['name']
-
-        for s in self.server_list:
-            if s['status'] != 'SUCCESS':
-                srv = self.cs.servers.get(s['id'])
+            srv = self.cs.servers.get(s['id'])
+            s['build_status'] = srv.status
+            if s['status'] != 'SUCCESS' and self.delete_failed:
                 srv.delete()
                 s['status'] = 'DELETED'
 
+            if s['status'] == 'SUCCESS' and self.delete_success:
+                srv.delete()
+                s['status'] = 'DELETED'
+
+    def print_summary(self):
+        headers = [u'name', u'status', u'build-status',
+                   u'build-time', u'flavor-id', u'primary-ip',
+                   u'server-id']
+        pt = prettytable.PrettyTable(headers)
+        pt.align["name"] = 'l'
+        pt.align["flavor_id"] = 'l'
         for s in self.server_list:
-            print s['name']
+            tds = []
+            tds.append(s['name'])
+            tds.append(s['status'])
+            tds.append(s['build_status'])
+            tds.append(s['build_time'])
+            tds.append(s['flavor_id'])
+            tds.append(s['primary_ip'])
+            tds.append(s['id'])
+            pt.add_row(tds)
+        print pt.get_string()
+
+    def register_stats(self):
+        if self.template_args['server']['stats_file']:
+            if os.path.isfile(template_args['server']['stats_file']):
+                stats = open(template_args['server']['stats_file'], 'a+')
+            else:
+                stats = open(template_args['server']['stats_file'], 'w')
+                stats.write('image_name,image_id,flavor_id,'
+                            'build_status,build_time')
+            for s in self.server_list:
+                stats.write("%s,%s,%s,%s,%s\n" % (
+                            s['image_name'],
+                            s['image_id'],
+                            s['flavor_id'],
+                            s['build_status'],
+                            s['build_time']))
 
     def watch_build(self):
         ctr = 0
@@ -98,26 +140,30 @@ class spinup:
         while ctr < self.total_timeout:
             for s in self.server_list:
                 srv = self.cs.servers.get(s['id'])
+                s['build_status'] = srv.status
                 s['build_time'] = s['build_time'] + self.check_interval
-                if s['build_time'] >= self.build_timeout
-                   and srv.status != "ACTIVE":
-
-                    logging.info("Build timeout reached for %s %s" % (srv.name, srv.id))
+                if s['build_time'] >= self.build_timeout and srv.status != "ACTIVE":
+                    logging.info("Build timeout reached for %s %s"
+                                 % (srv.name, srv.id))
                     logging.info("Deleting server %s" % (srv.id))
                     srv.delete()
                     s['status'] = 'FAILED'
 
                 else:
                     if srv.status == "ACTIVE":
-                        logging.info("Build complete for %s %s" % (srv.name, srv.id))
+                        logging.info("Build complete for %s %s" %
+                                     (srv.name, srv.id))
+                        s['primary_ip'] = srv.accessIPv4
                         if self.health_check(srv.accessIPv4):
                             success = success + 1
-                        s['status'] = 'SUCCESS'
+                            s['status'] = 'SUCCESS'
+                        else:
+                            s['status'] = 'FAILED'
                     if success == self.desired_count:
                         logging.info("Desired count reached")
                         print "Desired count reached"
                         self.cleanup_build()
-                        sys.exit(0)
+                        return
             time.sleep(self.check_interval)
             ctr = ctr + self.check_interval
 
@@ -128,8 +174,8 @@ class spinup:
         self.run_tag = self.id_generator(4)
         self.desired_count = template_args['server']['desired_count']
         self.error_prediction_pct = template_args['server']['error_prediction_pct']
-        self.image = template_args['server']['image']
-        self.flavor = template_args['server']['flavor']
+        self.image_id = template_args['server']['image_id']
+        self.flavor_id = template_args['server']['flavor_id']
 
         self.build_timeout = template_args['server']['build_timeout']
         self.total_timeout = template_args['server']['total_timeout']
@@ -142,51 +188,149 @@ class spinup:
         self.stats_file = template_args['server']['stats_file']
         self.sshkey_name = template_args['server']['sshkey_name']
 
-        self.calc_count = self.desired_count + int(math.ceil((self.error_prediction_pct/100)*self.desired_count))
+        self.calc_count = self.desired_count + int(
+            math.ceil((self.error_prediction_pct/100)*self.desired_count))
 
-        logging.info("Building servers with Image: %s, Flavor: %s ,"
-                     " Desired Count: %d, Calculated Count: %d,"
-                     " Build timeout: %s Total Timeout: %d,"
-                     " Delete if failed: %s, Delete if success: %s,"
-                     " Rackconnect: %s, Statistics File: %s" %
-                     (self.image, self.flavor, self.desired_count, self.calc_count, self.build_timeout,
-                      self.total_timeout, self.delete_failed, self.delete_success,
-                      self.rackconnect, self.stats_file))
-
+        self.image_name = self.get_image_name(self.image_id)
+        logging.info("Building servers::"
+                     " Image Name: %s "
+                     " Image ID: %s,"
+                     " Flavor ID: %s ,"
+                     " Desired Count: %d,"
+                     " Calculated Count: %d,"
+                     " Build timeout: %s ,"
+                     " Total Timeout: %d,"
+                     " Delete if failed: %s,"
+                     " Delete if success: %s,"
+                     " Rackconnect: %s,"
+                     " Statistics File: %s" %
+                     (self.image_name,
+                      self.image_id,
+                      self.flavor_id,
+                      self.desired_count,
+                      self.calc_count,
+                      self.build_timeout,
+                      self.total_timeout,
+                      self.delete_failed,
+                      self.delete_success,
+                      self.rackconnect,
+                      self.stats_file))
+        if self.image_name.find('Windows') == -1:
+            is_linux = True
+        else:
+            is_linux = False
         for ctr in xrange(0, self.calc_count):
             s_name = self.run_tag + "-" + self.id_generator(8)
             logging.info("Building server %s" % (s_name))
-            s_create = self.cs.servers.create(s_name,
-                                self.image,
-                                self.flavor)
-            self.server_list.append({'id': s_create.id, 'name': s_name,
-                                    'image': self.image, 'flavor': self.flavor,
-                                    'root_pass': s_create.adminPass, 'build_time': 0,
-                                    'status': 'STARTED'})
+            if is_linux:
+                if self.sshkey_name:
+                    s_create = self.cs.servers.create(
+                        s_name,
+                        self.image_id,
+                        self.flavor_id,
+                        key_name=self.sshkey_name)
+                else:
+                    s_create = self.cs.servers.create(
+                        s_name,
+                        self.image_id,
+                        self.flavor_id)
+            else:
+                s_create = self.cs.servers.create(
+                    s_name,
+                    self.image_id,
+                    self.flavor_id)
+
+            self.server_list.append({'id': s_create.id,
+                                    'name': s_name,
+                                    'image_name': self.image_name,
+                                    'image_id': self.image_id,
+                                    'flavor_id': self.flavor_id,
+                                    'root_pass': s_create.adminPass,
+                                    'build_time': 0,
+                                    'status': 'STARTED',
+                                    'build_status': 'UNKNOWN',
+                                    'primary_ip': '0.0.0.0'})
         self.watch_build()
 
 
 def print_usage():
-    print "usage: spinup --template [template file]"
-    sys.exit(0)
+    print "usage: spinup "
+    print "Arguments: "
+    "--help     : This help"
+    "--username : Rackspace Cloud username or environment variable OS_USERNAME"
+    "--apikey   : Rackspace Cloud API key or environment variable OS_PASSWORD"
+    "--region   : Rackspace Cloud region(ord,iad,lon,syd,hkg) or environment variable OS_PASSWORD" 
+    "--template : YAML template (use --templatehelp for more details)"
+    "--templatehelp : Print detailed template help"
+
+def template_help():
+    print '''
+log_file: Log file for operations
+log_level: Log level
+
+creds:
+  username: Rackspace Cloud username. This also can be read from the environment variable OS_USERNAME or passed via the command line using --username
+  api_key: Rackspace Cloud api key. This also can be read from the environment variable OS_PASSWORD or passed via the command line using --apikey
+  region: Rackspace Cloud region(ord,iad,lon,syd,hkg). This also can be read from the environment variable OS_REGION or passed via the command line using --region
+
+server:
+  image_id: Rackspace cloud server image ID
+  flavor_id: Rackspace cloud flavor ID
+  sshkey_name: SSH key if server type is Linux
+  tests: Define the tests that need to be performed for determining the sucess of the server build
+    ports: Comma separated list of ports. These ports will be scanned to make sure they are listening
+    url: A URL that can be used to check heath status. e.g. /health.php
+    url_sha:  A SHA checksum for the URL
+  build_timeout: Number of seconds to wait before treating the server as failed. If the server is not active by then, it will be deleted.
+  total_timeout: A grand total timeout after which the scripts aborts.
+  check_interval: Intervals to check server status during the build process. If you set this too low, you may hit API limits 
+  desired_count: Number of servers desired
+  error_prediction_pct: An estimation of how many servers will fail the build. This is used to calculate the number of servers to start with. The values are rounded to the nearest integer
+  delete_failed: Delete servers that we consider failed. This includes the servers that took longer than build_timeout
+  delete_success: Delete servers in any case. Used for testing and playing.
+  rackconnect: Are these servers rackconnected. 
+  stats_file: A file to which CSV results will be written
+    '''
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="Spinup")
-    parser.add_argument("--username", metavar="OS_USERNAME",
-                        help="Username for the Rackspace cloud")
-    parser.add_argument("--apikey", metavar="OS_PASSWORD",
-                        help="API Key for the Rackspace Cloud")
-    parser.add_argument("--region", metavar="OS_REGION_NAME",
-                        help="Region for the Rackspace Cloud")
-    parser.add_argument("--template", metavar="", help="Yaml file")
+    parser.add_argument("--username", metavar="$OS_USERNAME",
+                        help="Rackspace Cloud API key or environment variable OS_USERNAME")
+    parser.add_argument("--apikey", metavar="$OS_PASSWORD",
+                        help="Rackspace Cloud API key or environment variable OS_PASSWORD")
+    parser.add_argument("--region", metavar="$OS_REGION_NAME",
+                        help="Rackspace Cloud API key or environment variable OS_REGION")
+    parser.add_argument("--template", metavar="", help="YAML template (use --templatehelp for more details)")
+    parser.add_argument("--templatehelp", metavar="", help="Print detailed template help")
+
     args = parser.parse_args()
+
+    if args.templatehelp:
+        template_help()
+        sys.exit(0)
+
     if args.template:
         stream = open(args.template, 'r')
         template_args = yaml.load(stream)
     else:
         logging.debug("Yaml template not provided on the command line.")
         print_usage()
+
+    if template_args['log_file']:
+        log_file = template_args['log_file']
+    else:
+        log_file = "spinup.log"
+
+    log_level = logging.INFO
+    if template_args['log_level']:
+        if template_args['log_level'] == 'debug':
+            log_level = logging.DEBUG
+        if template_args['log_level'] == 'info':
+            log_level = logging.INFO
+
+    logging.basicConfig(filename=logfile, level=log_level,
+                    format='%(asctime)s [%(levelname)s] %(message)s')
 
     if args.username:
         username = args.username
@@ -197,6 +341,8 @@ if __name__ == '__main__':
         username = os.environ.get("OS_USERNAME")
     else:
         logging.debug("Username not found in yaml file.")
+        print_usage()
+        sys.exit(-1)
 
     if args.apikey:
         api_key = args.username
@@ -207,6 +353,8 @@ if __name__ == '__main__':
         api_key = os.environ.get("OS_PASSWORD")
     else:
         logging.debug("API Key not found in yaml file.")
+        print_usage()
+        sys.exit(-1)
 
     if args.region:
         region = args.region
@@ -217,8 +365,12 @@ if __name__ == '__main__':
         region = os.environ.get("OS_REGION_NAME")
     else:
         logging.debug("Region not found in yaml file.")
+        print_usage()
+        sys.exit(-1)
 
     logging.info("Connecting with username: %s ,"
                  "api key XXX, region %s" % (username, region))
     s = spinup(username, api_key, region, template_args)
     s.run()
+    s.register_stats()
+    s.print_summary()
