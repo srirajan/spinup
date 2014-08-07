@@ -45,3 +45,13 @@ server:
   rackconnect: Are these servers rackconnected. 
   stats_file: A file to which CSV results will be written
   ```
+
+  TODO
+  =====
+  Implement failure detection in code
+  Implement cleanup on total timeout
+  Fix stats header issue
+  Test with custom and windows images
+  Implement rackconnect
+  Validate sshkey functionality
+  
