@@ -1,23 +1,26 @@
 --- 
+log_file: spinup.log
+log_level: debug
+
 creds:
   username: 
   api_key: 
   region: 
 
 server:
-  image: a84b1592-6817-42da-a57c-3c13f3cfc1da
-  flavor: performance1-1
+  image_id: a84b1592-6817-42da-a57c-3c13f3cfc1da
+  flavor_id: performance1-1
   sshkey_name: sri-key
-  network_names:
   tests:
     ports: 22
-    url: 
+    url: /index.html
+    url_sha:  
   build_timeout: 300
   total_timeout: 1500
-  check_interval: 30
-  desired_count: 1
-  error_prediction_pct: 0
+  check_interval: 15
+  desired_count: 2
+  error_prediction_pct: 20
   delete_failed: yes
   delete_success: yes
   rackconnect: no
-  stats_file:
+  stats_file: spinup.csv
