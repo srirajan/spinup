@@ -8,18 +8,20 @@ creds:
   region: 
 
 server:
-  image_id: a84b1592-6817-42da-a57c-3c13f3cfc1da
-  flavor_id: performance1-1
+  image_id: f98fbf51-629f-4baa-973c-f3e706db4920
+  #image_id: a84b1592-6817-42da-a57c-3c13f3cfc1da
+  flavor_id: performance1-2
   sshkey_name: sri-key
   tests:
     ports: 22
-    url: /index.html
-    url_sha:  
-  build_timeout: 300
-  total_timeout: 1500
-  check_interval: 15
-  desired_count: 2
-  error_prediction_pct: 20
+    url: /healthcheck.php
+    url_sha1: 20089a1bfaceb24bba62517301afb1fc98b70024
+    retries: 2
+  build_timeout: 600
+  total_timeout: 1800
+  check_interval: 10
+  desired_count: 1
+  error_prediction_pct: 0
   delete_failed: yes
   delete_success: yes
   rackconnect: no
