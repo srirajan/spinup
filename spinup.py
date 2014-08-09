@@ -27,6 +27,8 @@ import time
 import socket
 import prettytable
 import os.path
+import urllib2
+import hashlib
 
 
 class spinup:
@@ -67,41 +69,93 @@ class spinup:
         print "__NOT_IMPLEMENTED__"
 
     def health_check(self, ip):
-        if self.template_args['server']['tests']['ports'] is not None:
-            tests_passed = True
-            port_list = str(self.template_args['server']['tests']['ports']).split(",")
-            for p in port_list:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                p = int(p)
-                result = s.connect_ex((ip, p))
-                if(result == 0):
-                    logging.info("Health check for IP %s ,"
-                                 " port %s succeeded" % (ip, p))
-                else:
-                    logging.info("Health check for IP %s ,"
-                                 " port %s failed" % (ip, p))
-                    tests_passed = False
-                s.close()
+        all_tests_passed = True
+        retries = self.template_args['server']['tests']['retries']
+        test_count = 0
+        port_test = {}
+        while test_count < retries:
+            if 'ports' in self.template_args['server']['tests']:
+                if self.template_args['server']['tests']['ports'] is not None:
+                    port_list = str(self.template_args['server']['tests']['ports'])\
+                        .split(",")
+                    for p in port_list:
+                        if p in port_test:
+                            if port_test[p] != 'SUCCESS':
+                                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                result = s.connect_ex((ip, int(p)))
+                                if(result == 0):
+                                    logging.info("Attempt %d Health check for IP %s ,"
+                                             " port %s succeeded" % (test_count, ip, p))
+                                    port_test[p] = 'SUCCESS'
+                                else:
+                                    logging.info("Attempt %d Health check for IP %s ,"
+                                             " port %s failed" % (test_count, ip, p))
+                                    port_test[p] = 'FAILED'
+                                s.close()
+                        else:
+                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            result = s.connect_ex((ip, int(p)))
+                            if(result == 0):
+                                logging.info("Attempt %d Health check for IP %s ,"
+                                         " port %s succeeded" % (test_count, ip, p))
+                                port_test[p] = 'SUCCESS'
+                            else:
+                                logging.info("Attempt %d Health check for IP %s ,"
+                                         " port %s failed" % (test_count, ip, p))
+                                port_test[p] = 'FAILED'
+                            s.close()
+                    for pk, pv in port_test.items():
+                        if pv == 'FAILED':
+                            all_tests_passed = False
+            if all_tests_passed:
+                if 'url' in self.template_args['server']['tests']:
+                    if self.template_args['server']['tests']['url'] is not None:
+                        try:
+                            url = "http://" + ip + \
+                                self.template_args['server']['tests']['url']
+                            urlobj = urllib2.urlopen(url, timeout=5)
+                            urldata = urlobj.read()
+                            sha1 = hashlib.sha1()
+                            sha1.update(urldata)
+                            if sha1.hexdigest() != \
+                                    self.template_args['server']['tests']['url_sha1']:
+                                logging.info("Health check for URL %s ,"
+                                             " failed " % (url))
+                                all_tests_passed = False
+                            else:
+                                logging.info("Health check for URL %s ,"
+                                             " succeeded " % (url))
+                        except urllib2.URLError:
+                            logging.info("Health check for URL %s ,"
+                                         " failed " % (url))
+                            all_tests_passed = False
+            else:
+                if 'url' in self.template_args['server']['tests']:
+                    logging.info("Url checks skipped because port checks failed")
 
-        if self.template_args['server']['tests']['url'] is not None:
-            print "__NOT_IMPLEMENTED__"
-
-        return(tests_passed)
+            test_count = test_count + 1
+            time.sleep(1)
+        return(all_tests_passed)
 
     def cleanup_build(self):
+        logging.info("Cleaning up build")
         for s in self.server_list:
             srv = self.cs.servers.get(s['id'])
             s['build_status'] = srv.status
             if s['status'] != 'SUCCESS' and self.delete_failed:
+                logging.info("Deleting server %s in %s status" %
+                             (srv.id, s['build_status']))
                 srv.delete()
                 s['status'] = 'DELETED'
 
             if s['status'] == 'SUCCESS' and self.delete_success:
+                logging.info("Deleting server %s in %s status" %
+                             (srv.id, s['build_status']))
                 srv.delete()
-                s['status'] = 'DELETED'
+                s['status'] = 'DELETED_SUCCESS'
 
     def print_summary(self):
-        headers = [u'name', u'status', u'build-status',
+        headers = [u'name', u'end-status', u'build-status',
                    u'build-time', u'flavor-id', u'primary-ip',
                    u'server-id']
         pt = prettytable.PrettyTable(headers)
@@ -126,7 +180,7 @@ class spinup:
             else:
                 stats = open(template_args['server']['stats_file'], 'w')
                 stats.write('image_name,image_id,flavor_id,'
-                            'build_status,build_time')
+                            "build_status,build_time\n")
 
             for s in self.server_list:
                 stats.write("%s,%s,%s,%s,%s\n" % (
@@ -139,19 +193,13 @@ class spinup:
     def watch_build(self):
         ctr = 0
         success = 0
+        failed = 0
         while ctr < self.total_timeout:
             for s in self.server_list:
                 srv = self.cs.servers.get(s['id'])
                 s['build_status'] = srv.status
                 s['build_time'] = s['build_time'] + self.check_interval
-                if s['build_time'] >= self.build_timeout and srv.status != "ACTIVE":
-                    logging.info("Build timeout reached for %s %s"
-                                 % (srv.name, srv.id))
-                    logging.info("Deleting server %s" % (srv.id))
-                    srv.delete()
-                    s['status'] = 'FAILED'
-
-                else:
+                if s['status'] != 'SUCCESS':
                     if srv.status == "ACTIVE":
                         logging.info("Build complete for %s %s" %
                                      (srv.name, srv.id))
@@ -161,21 +209,78 @@ class spinup:
                             s['status'] = 'SUCCESS'
                         else:
                             s['status'] = 'FAILED'
-                    if success == self.desired_count:
-                        logging.info("Desired count reached")
-                        print "Desired count reached"
-                        self.cleanup_build()
-                        return
+                            failed = failed + 1
+                            if self.delete_failed:
+                                srv.delete()
+                            self.build_one()
+                    else:
+                        if s['build_time'] >= self.build_timeout:
+                            logging.info("Build timeout reached for %s %s"
+                                         % (srv.name, srv.id))
+                            logging.info("Deleting server %s" % (srv.id))
+                            if self.delete_failed:
+                                srv.delete()
+                            s['status'] = 'FAILED'
+                            failed = failed + 1
+                            self.build_one()
+                if success == self.desired_count:
+                    logging.info("Desired count reached %d"
+                                 % (self.desired_count))
+                    print ("Desired count reached %d"
+                           % (self.desired_count))
+                    self.cleanup_build()
+                    return
             time.sleep(self.check_interval)
             ctr = ctr + self.check_interval
+        if ctr >= self.total_timeout:
+            logging.info("Total timeout reached %d seconds"
+                         % (self.total_timeout))
+            self.cleanup_build()
+
+    def build_one(self):
+        if self.image_name.find('Windows') == -1:
+            is_linux = True
+        else:
+            is_linux = False
+        s_name = self.run_tag + "-" + self.id_generator(8)
+        logging.info("Building server %s" % (s_name))
+        if is_linux:
+            if self.sshkey_name:
+                s_create = self.cs.servers.create(
+                    s_name,
+                    self.image_id,
+                    self.flavor_id,
+                    key_name=self.sshkey_name)
+            else:
+                s_create = self.cs.servers.create(
+                    s_name,
+                    self.image_id,
+                    self.flavor_id)
+        else:
+            s_create = self.cs.servers.create(
+                s_name,
+                self.image_id,
+                self.flavor_id)
+
+        self.server_list.append({'id': s_create.id,
+                                'name': s_name,
+                                'image_name': self.image_name,
+                                'image_id': self.image_id,
+                                'flavor_id': self.flavor_id,
+                                'root_pass': s_create.adminPass,
+                                'build_time': 0,
+                                'status': 'STARTED',
+                                'build_status': 'UNKNOWN',
+                                'primary_ip': '0.0.0.0'})
 
     def run(self):
-        print "Starting"
-        print "Username: %s , Region: %s" % (self.username, self.region)
+        print "Starting spinup : Username: %s , Region: %s" \
+            % (self.username, self.region)
 
         self.run_tag = self.id_generator(4)
         self.desired_count = template_args['server']['desired_count']
-        self.error_prediction_pct = template_args['server']['error_prediction_pct']
+        self.error_prediction_pct = \
+            template_args['server']['error_prediction_pct']
         self.image_id = template_args['server']['image_id']
         self.flavor_id = template_args['server']['flavor_id']
 
@@ -217,41 +322,8 @@ class spinup:
                       self.delete_success,
                       self.rackconnect,
                       self.stats_file))
-        if self.image_name.find('Windows') == -1:
-            is_linux = True
-        else:
-            is_linux = False
         for ctr in xrange(0, self.calc_count):
-            s_name = self.run_tag + "-" + self.id_generator(8)
-            logging.info("Building server %s" % (s_name))
-            if is_linux:
-                if self.sshkey_name:
-                    s_create = self.cs.servers.create(
-                        s_name,
-                        self.image_id,
-                        self.flavor_id,
-                        key_name=self.sshkey_name)
-                else:
-                    s_create = self.cs.servers.create(
-                        s_name,
-                        self.image_id,
-                        self.flavor_id)
-            else:
-                s_create = self.cs.servers.create(
-                    s_name,
-                    self.image_id,
-                    self.flavor_id)
-
-            self.server_list.append({'id': s_create.id,
-                                    'name': s_name,
-                                    'image_name': self.image_name,
-                                    'image_id': self.image_id,
-                                    'flavor_id': self.flavor_id,
-                                    'root_pass': s_create.adminPass,
-                                    'build_time': 0,
-                                    'status': 'STARTED',
-                                    'build_status': 'UNKNOWN',
-                                    'primary_ip': '0.0.0.0'})
+            self.build_one()
         self.watch_build()
 
 
@@ -261,9 +333,11 @@ def print_usage():
     "--help     : This help"
     "--username : Rackspace Cloud username or environment variable OS_USERNAME"
     "--apikey   : Rackspace Cloud API key or environment variable OS_PASSWORD"
-    "--region   : Rackspace Cloud region(ord,iad,lon,syd,hkg) or environment variable OS_PASSWORD" 
+    "--region   : Rackspace Cloud region(ord,iad,lon,syd,hkg) or environment"
+    " variable OS_PASSWORD"
     "--template : YAML template (use --templatehelp for more details)"
     "--templatehelp : Print detailed template help"
+
 
 def template_help():
     print '''
@@ -271,40 +345,77 @@ log_file: Log file for operations
 log_level: Log level
 
 creds:
-  username: Rackspace Cloud username. This also can be read from the environment variable OS_USERNAME or passed via the command line using --username
-  api_key: Rackspace Cloud api key. This also can be read from the environment variable OS_PASSWORD or passed via the command line using --apikey
-  region: Rackspace Cloud region(ord,iad,lon,syd,hkg). This also can be read from the environment variable OS_REGION or passed via the command line using --region
+  username: Rackspace Cloud username. This also can be read from the
+  environment variable OS_USERNAME or passed via the command line using
+  --username.
+
+  api_key: Rackspace Cloud api key. This also can be read from the
+  environment variable OS_PASSWORD or passed via the command line using
+  --apikey.
+
+  region: Rackspace Cloud region(ord,iad,lon,syd,hkg). This also can be
+  read from the environment variable OS_REGION or passed via the command
+  line using --region.
 
 server:
-  image_id: Rackspace cloud server image ID
-  flavor_id: Rackspace cloud flavor ID
-  sshkey_name: SSH key if server type is Linux
-  tests: Define the tests that need to be performed for determining the sucess of the server build
-    ports: Comma separated list of ports. These ports will be scanned to make sure they are listening
-    url: A URL that can be used to check heath status. e.g. /health.php
-    url_sha:  A SHA checksum for the URL
-  build_timeout: Number of seconds to wait before treating the server as failed. If the server is not active by then, it will be deleted.
+  image_id: Rackspace cloud server image ID.
+
+  flavor_id: Rackspace cloud flavor ID.
+
+  sshkey_name: SSH key if server type is Linux.
+
+  tests: Define the tests that need to be performed for determining the
+  sucess of the server build.
+
+  ports: Comma separated list of ports. These ports will be scanned to make
+  sure they are listening.
+
+  url: A URL that can be used to check heath status. e.g. /health.php
+
+  url_sha1:  A SHA checksum for the URL.
+
+  retries: Number of times to try the tests.
+
+  build_timeout: Number of seconds to wait before treating the server as
+  failed. If the server is not active by then, it will be deleted.
+
   total_timeout: A grand total timeout after which the scripts aborts.
-  check_interval: Intervals to check server status during the build process. If you set this too low, you may hit API limits 
+
+  check_interval: Intervals to check server status during the build process.
+  If you set this too low, you may hit API limits.
+
   desired_count: Number of servers desired
-  error_prediction_pct: An estimation of how many servers will fail the build. This is used to calculate the number of servers to start with. The values are rounded to the nearest integer
-  delete_failed: Delete servers that we consider failed. This includes the servers that took longer than build_timeout
+
+  error_prediction_pct: An estimation of how many servers will fail the build.
+  This is used to calculate the number of servers to start with. The values
+  are rounded to the nearest integer.
+
+  delete_failed: Delete servers that we consider failed. This includes the
+  servers that took longer than build_timeout.
+
   delete_success: Delete servers in any case. Used for testing and playing.
-  rackconnect: Are these servers rackconnected. 
-  stats_file: A file to which CSV results will be written
+
+  rackconnect: Are these servers rackconnected.
+
+  stats_file: A file to which CSV results will be written.
     '''
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="Spinup")
     parser.add_argument("--username", metavar="$OS_USERNAME",
-                        help="Rackspace Cloud API key or environment variable OS_USERNAME")
+                        help="Rackspace Cloud API key or environment "
+                        "variable OS_USERNAME")
     parser.add_argument("--apikey", metavar="$OS_PASSWORD",
-                        help="Rackspace Cloud API key or environment variable OS_PASSWORD")
+                        help="Rackspace Cloud API key or environment "
+                        "variable OS_PASSWORD")
     parser.add_argument("--region", metavar="$OS_REGION_NAME",
-                        help="Rackspace Cloud API key or environment variable OS_REGION")
-    parser.add_argument("--template", metavar="", help="YAML template (use --templatehelp for more details)")
-    parser.add_argument("--templatehelp", metavar="", help="Print detailed template help")
+                        help="Rackspace Cloud API key or environment "
+                        "variable OS_REGION")
+    parser.add_argument("--template", metavar="", help="YAML template "
+                        "(use --templatehelp for more details)")
+    parser.add_argument("--templatehelp", metavar="", help="Print detailed "
+                        "template help")
 
     args = parser.parse_args()
 
@@ -314,7 +425,7 @@ if __name__ == '__main__':
 
     if args.template:
         stream = open(args.template, 'r')
-        template_args = yaml.load(stream)
+        template_args = yaml.safe_load(stream)
     else:
         logging.debug("Yaml template not provided on the command line.")
         print_usage()
@@ -331,8 +442,8 @@ if __name__ == '__main__':
         if template_args['log_level'] == 'info':
             log_level = logging.INFO
 
-    logging.basicConfig(filename=logfile, level=log_level,
-                    format='%(asctime)s [%(levelname)s] %(message)s')
+    logging.basicConfig(filename=log_file, level=log_level,
+                        format='%(asctime)s [%(levelname)s] %(message)s')
 
     if args.username:
         username = args.username
