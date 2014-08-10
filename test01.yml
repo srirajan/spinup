@@ -20,8 +20,8 @@ server:
   build_timeout: 600
   total_timeout: 1800
   check_interval: 10
-  desired_count: 1
-  error_prediction_pct: 0
+  desired_count: 10
+  error_prediction_pct: 25
   delete_failed: yes
   delete_success: yes
   rackconnect: no
