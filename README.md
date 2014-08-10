@@ -78,13 +78,6 @@ server:
 
 ```
 
-TODO
-======
- * Test with custom and windows images
- * Implement rackconnect
- * Validate sshkey functionality
-
-
 EXAMPLES
 ======
 
