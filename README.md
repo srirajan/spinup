@@ -8,6 +8,7 @@ Simple server spinup example using Pyrax and a yaml definition file
  - Generate statistics
 
 Arguments:
+
 --help     : This help
 
 --username : Rackspace Cloud username.This also can be read from the environment variable OS_USERNAME 
