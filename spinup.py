@@ -54,30 +54,155 @@ class spinup:
             print "Failed to get cloud server object."
             sys.exit(-1)
 
-    def id_generator(self, size=6,
-                     chars=string.ascii_lowercase + string.digits):
-        return ''.join(random.choice(chars) for x in range(size))
+    def run(self):
+        print "Starting spinup : Username: %s , Region: %s" \
+            % (self.username, self.region)
 
-    def get_image_name(self, image_id):
-        imgs = self.cs.images.list()
-        for img in imgs:
-            if img.id == image_id:
-                return img.name
-        return 'NOTFOUND'
+        self.run_tag = self.id_generator(4)
+        self.desired_count = template_args['server']['desired_count']
+        self.error_prediction_pct = \
+            template_args['server']['error_prediction_pct']
+        self.image_id = template_args['server']['image_id']
+        self.flavor_id = template_args['server']['flavor_id']
 
-    def get_rackconnect_ip(self):
-        print "__NOT_IMPLEMENTED__"
+        self.build_timeout = template_args['server']['build_timeout']
+        self.total_timeout = template_args['server']['total_timeout']
+        self.check_interval = template_args['server']['check_interval']
+
+        self.delete_failed = template_args['server']['delete_failed']
+        self.delete_success = template_args['server']['delete_success']
+
+        self.rackconnect = template_args['server']['rackconnect']
+        self.stats_file = template_args['server']['stats_file']
+        self.sshkey_name = template_args['server']['sshkey_name']
+
+        self.calc_count = self.desired_count + int(
+            math.ceil((self.error_prediction_pct/100)*self.desired_count))
+
+        self.image_name = self.get_image_name(self.image_id)
+        logging.info("Building servers::"
+                     " Image Name: %s "
+                     " Image ID: %s,"
+                     " Flavor ID: %s ,"
+                     " Desired Count: %d,"
+                     " Calculated Count: %d,"
+                     " Build timeout: %s ,"
+                     " Total Timeout: %d,"
+                     " Delete if failed: %s,"
+                     " Delete if success: %s,"
+                     " Rackconnect: %s,"
+                     " Statistics File: %s" %
+                     (self.image_name,
+                      self.image_id,
+                      self.flavor_id,
+                      self.desired_count,
+                      self.calc_count,
+                      self.build_timeout,
+                      self.total_timeout,
+                      self.delete_failed,
+                      self.delete_success,
+                      self.rackconnect,
+                      self.stats_file))
+        for ctr in xrange(0, self.calc_count):
+            self.build_one()
+        self.watch_build()
+
+    def watch_build(self):
+        ctr = 0
+        success = 0
+        failed = 0
+        while ctr < self.total_timeout:
+            for s in self.server_list:
+#                try:
+                srv = self.cs.servers.get(s['id'])
+                s['build_status'] = srv.status
+                s['build_time'] = s['build_time'] + self.check_interval
+                if s['status'] != 'SUCCESS':
+                    if srv.status == "ACTIVE":
+                        logging.info("Build complete for %s %s" %
+                                     (srv.name, srv.id))
+                        s['primary_ip'] = srv.accessIPv4
+                        if self.health_check(srv.accessIPv4):
+                            success = success + 1
+                            s['status'] = 'SUCCESS'
+                        else:
+                            s['status'] = 'FAILED'
+                            failed = failed + 1
+                            if self.delete_failed:
+                                srv.delete()
+                            self.build_one()
+                    else:
+                        if s['build_time'] >= self.build_timeout:
+                            logging.info("Build timeout reached for %s %s"
+                                         % (srv.name, srv.id))
+                            logging.info("Deleting server %s" % (srv.id))
+                            if self.delete_failed:
+                                srv.delete()
+                            s['status'] = 'FAILED'
+                            failed = failed + 1
+                            self.build_one()
+                if success == self.desired_count:
+                    logging.info("Desired count reached %d"
+                                 % (self.desired_count))
+                    print ("Desired count reached %d"
+                           % (self.desired_count))
+                    self.cleanup_build()
+                    return
+                # except Exception as e:
+                #     logging.debug("Caught server not found exception")
+                #     continue
+                time.sleep(self.check_interval)
+                ctr = ctr + self.check_interval
+        if ctr >= self.total_timeout:
+            logging.info("Total timeout reached %d seconds"
+                         % (self.total_timeout))
+            self.cleanup_build()
+
+    def build_one(self):
+        if self.image_name.find('Windows') == -1:
+            is_linux = True
+        else:
+            is_linux = False
+        s_name = self.run_tag + "-" + self.id_generator(8)
+        logging.info("Building server %s" % (s_name))
+        if is_linux:
+            if self.sshkey_name:
+                s_create = self.cs.servers.create(
+                    s_name,
+                    self.image_id,
+                    self.flavor_id,
+                    key_name=self.sshkey_name)
+            else:
+                s_create = self.cs.servers.create(
+                    s_name,
+                    self.image_id,
+                    self.flavor_id)
+        else:
+            s_create = self.cs.servers.create(
+                s_name,
+                self.image_id,
+                self.flavor_id)
+
+        self.server_list.append({'id': s_create.id,
+                                'name': s_name,
+                                'image_name': self.image_name,
+                                'image_id': self.image_id,
+                                'flavor_id': self.flavor_id,
+                                'root_pass': s_create.adminPass,
+                                'build_time': 0,
+                                'status': 'STARTED',
+                                'build_status': 'UNKNOWN',
+                                'primary_ip': '0.0.0.0'})
 
     def health_check(self, ip):
-        all_tests_passed = True
         retries = self.template_args['server']['tests']['retries']
         test_count = 0
         port_test = {}
+        url_test = False
         while test_count < retries:
             if 'ports' in self.template_args['server']['tests']:
                 if self.template_args['server']['tests']['ports'] is not None:
-                    port_list = str(self.template_args['server']['tests']['ports'])\
-                        .split(",")
+                    port_list = str(self.template_args['server']['tests']['ports']).split(",")
                     for p in port_list:
                         if p in port_test:
                             if port_test[p] != 'SUCCESS':
@@ -85,11 +210,11 @@ class spinup:
                                 result = s.connect_ex((ip, int(p)))
                                 if(result == 0):
                                     logging.info("Attempt %d Health check for IP %s ,"
-                                             " port %s succeeded" % (test_count, ip, p))
+                                                 " port %s succeeded" % (test_count, ip, p))
                                     port_test[p] = 'SUCCESS'
                                 else:
                                     logging.info("Attempt %d Health check for IP %s ,"
-                                             " port %s failed" % (test_count, ip, p))
+                                                 " port %s failed" % (test_count, ip, p))
                                     port_test[p] = 'FAILED'
                                 s.close()
                         else:
@@ -97,45 +222,47 @@ class spinup:
                             result = s.connect_ex((ip, int(p)))
                             if(result == 0):
                                 logging.info("Attempt %d Health check for IP %s ,"
-                                         " port %s succeeded" % (test_count, ip, p))
+                                             " port %s succeeded" % (test_count, ip, p))
                                 port_test[p] = 'SUCCESS'
                             else:
                                 logging.info("Attempt %d Health check for IP %s ,"
-                                         " port %s failed" % (test_count, ip, p))
+                                             " port %s failed" % (test_count, ip, p))
                                 port_test[p] = 'FAILED'
                             s.close()
+                    port_test_failed = False
                     for pk, pv in port_test.items():
                         if pv == 'FAILED':
-                            all_tests_passed = False
-            if all_tests_passed:
+                            port_test_failed = True
+            if not port_test_failed:
                 if 'url' in self.template_args['server']['tests']:
                     if self.template_args['server']['tests']['url'] is not None:
-                        try:
-                            url = "http://" + ip + \
-                                self.template_args['server']['tests']['url']
-                            urlobj = urllib2.urlopen(url, timeout=5)
-                            urldata = urlobj.read()
-                            sha1 = hashlib.sha1()
-                            sha1.update(urldata)
-                            if sha1.hexdigest() != \
-                                    self.template_args['server']['tests']['url_sha1']:
+                        if not url_test:
+                            try:
+                                url = "http://" + ip + \
+                                    self.template_args['server']['tests']['url']
+                                urlobj = urllib2.urlopen(url, timeout=5)
+                                urldata = urlobj.read()
+                                sha1 = hashlib.sha1()
+                                sha1.update(urldata)
+                                if sha1.hexdigest() != \
+                                        self.template_args['server']['tests']['url_sha1']:
+                                    logging.info("Health check for URL %s ,"
+                                                 " failed " % (url))
+                                else:
+                                    logging.info("Health check for URL %s ,"
+                                                 " succeeded " % (url))
+                                    url_test = True
+                            except urllib2.URLError:
                                 logging.info("Health check for URL %s ,"
                                              " failed " % (url))
-                                all_tests_passed = False
-                            else:
-                                logging.info("Health check for URL %s ,"
-                                             " succeeded " % (url))
-                        except urllib2.URLError:
-                            logging.info("Health check for URL %s ,"
-                                         " failed " % (url))
-                            all_tests_passed = False
             else:
                 if 'url' in self.template_args['server']['tests']:
                     logging.info("Url checks skipped because port checks failed")
-
+            if url_test and not port_test_failed:
+                return(True)
             test_count = test_count + 1
             time.sleep(1)
-        return(all_tests_passed)
+        return(False)
 
     def cleanup_build(self):
         logging.info("Cleaning up build")
@@ -190,141 +317,19 @@ class spinup:
                             s['build_status'],
                             s['build_time']))
 
-    def watch_build(self):
-        ctr = 0
-        success = 0
-        failed = 0
-        while ctr < self.total_timeout:
-            for s in self.server_list:
-                srv = self.cs.servers.get(s['id'])
-                s['build_status'] = srv.status
-                s['build_time'] = s['build_time'] + self.check_interval
-                if s['status'] != 'SUCCESS':
-                    if srv.status == "ACTIVE":
-                        logging.info("Build complete for %s %s" %
-                                     (srv.name, srv.id))
-                        s['primary_ip'] = srv.accessIPv4
-                        if self.health_check(srv.accessIPv4):
-                            success = success + 1
-                            s['status'] = 'SUCCESS'
-                        else:
-                            s['status'] = 'FAILED'
-                            failed = failed + 1
-                            if self.delete_failed:
-                                srv.delete()
-                            self.build_one()
-                    else:
-                        if s['build_time'] >= self.build_timeout:
-                            logging.info("Build timeout reached for %s %s"
-                                         % (srv.name, srv.id))
-                            logging.info("Deleting server %s" % (srv.id))
-                            if self.delete_failed:
-                                srv.delete()
-                            s['status'] = 'FAILED'
-                            failed = failed + 1
-                            self.build_one()
-                if success == self.desired_count:
-                    logging.info("Desired count reached %d"
-                                 % (self.desired_count))
-                    print ("Desired count reached %d"
-                           % (self.desired_count))
-                    self.cleanup_build()
-                    return
-            time.sleep(self.check_interval)
-            ctr = ctr + self.check_interval
-        if ctr >= self.total_timeout:
-            logging.info("Total timeout reached %d seconds"
-                         % (self.total_timeout))
-            self.cleanup_build()
+    def id_generator(self, size=6,
+                     chars=string.ascii_lowercase + string.digits):
+        return ''.join(random.choice(chars) for x in range(size))
 
-    def build_one(self):
-        if self.image_name.find('Windows') == -1:
-            is_linux = True
-        else:
-            is_linux = False
-        s_name = self.run_tag + "-" + self.id_generator(8)
-        logging.info("Building server %s" % (s_name))
-        if is_linux:
-            if self.sshkey_name:
-                s_create = self.cs.servers.create(
-                    s_name,
-                    self.image_id,
-                    self.flavor_id,
-                    key_name=self.sshkey_name)
-            else:
-                s_create = self.cs.servers.create(
-                    s_name,
-                    self.image_id,
-                    self.flavor_id)
-        else:
-            s_create = self.cs.servers.create(
-                s_name,
-                self.image_id,
-                self.flavor_id)
+    def get_image_name(self, image_id):
+        imgs = self.cs.images.list()
+        for img in imgs:
+            if img.id == image_id:
+                return img.name
+        return 'NOTFOUND'
 
-        self.server_list.append({'id': s_create.id,
-                                'name': s_name,
-                                'image_name': self.image_name,
-                                'image_id': self.image_id,
-                                'flavor_id': self.flavor_id,
-                                'root_pass': s_create.adminPass,
-                                'build_time': 0,
-                                'status': 'STARTED',
-                                'build_status': 'UNKNOWN',
-                                'primary_ip': '0.0.0.0'})
-
-    def run(self):
-        print "Starting spinup : Username: %s , Region: %s" \
-            % (self.username, self.region)
-
-        self.run_tag = self.id_generator(4)
-        self.desired_count = template_args['server']['desired_count']
-        self.error_prediction_pct = \
-            template_args['server']['error_prediction_pct']
-        self.image_id = template_args['server']['image_id']
-        self.flavor_id = template_args['server']['flavor_id']
-
-        self.build_timeout = template_args['server']['build_timeout']
-        self.total_timeout = template_args['server']['total_timeout']
-        self.check_interval = template_args['server']['check_interval']
-
-        self.delete_failed = template_args['server']['delete_failed']
-        self.delete_success = template_args['server']['delete_success']
-
-        self.rackconnect = template_args['server']['rackconnect']
-        self.stats_file = template_args['server']['stats_file']
-        self.sshkey_name = template_args['server']['sshkey_name']
-
-        self.calc_count = self.desired_count + int(
-            math.ceil((self.error_prediction_pct/100)*self.desired_count))
-
-        self.image_name = self.get_image_name(self.image_id)
-        logging.info("Building servers::"
-                     " Image Name: %s "
-                     " Image ID: %s,"
-                     " Flavor ID: %s ,"
-                     " Desired Count: %d,"
-                     " Calculated Count: %d,"
-                     " Build timeout: %s ,"
-                     " Total Timeout: %d,"
-                     " Delete if failed: %s,"
-                     " Delete if success: %s,"
-                     " Rackconnect: %s,"
-                     " Statistics File: %s" %
-                     (self.image_name,
-                      self.image_id,
-                      self.flavor_id,
-                      self.desired_count,
-                      self.calc_count,
-                      self.build_timeout,
-                      self.total_timeout,
-                      self.delete_failed,
-                      self.delete_success,
-                      self.rackconnect,
-                      self.stats_file))
-        for ctr in xrange(0, self.calc_count):
-            self.build_one()
-        self.watch_build()
+    def get_rackconnect_ip(self):
+        print "__NOT_IMPLEMENTED__"
 
 
 def print_usage():
@@ -414,8 +419,8 @@ if __name__ == '__main__':
                         "variable OS_REGION")
     parser.add_argument("--template", metavar="", help="YAML template "
                         "(use --templatehelp for more details)")
-    parser.add_argument("--templatehelp", metavar="", help="Print detailed "
-                        "template help")
+    parser.add_argument("--templatehelp", help="Print detailed "
+                        "template help", action='store_true')
 
     args = parser.parse_args()
 
