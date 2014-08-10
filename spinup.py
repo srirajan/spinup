@@ -29,6 +29,8 @@ import prettytable
 import os.path
 import urllib2
 import hashlib
+from novaclient.exceptions import NotFound
+from pyrax.exceptions import NotFound
 
 
 class spinup:
@@ -113,44 +115,45 @@ class spinup:
         failed = 0
         while ctr < self.total_timeout:
             for s in self.server_list:
-#                try:
-                srv = self.cs.servers.get(s['id'])
-                s['build_status'] = srv.status
-                s['build_time'] = s['build_time'] + self.check_interval
-                if s['status'] != 'SUCCESS':
-                    if srv.status == "ACTIVE":
-                        logging.info("Build complete for %s %s" %
-                                     (srv.name, srv.id))
-                        s['primary_ip'] = srv.accessIPv4
-                        if self.health_check(srv.accessIPv4):
-                            success = success + 1
-                            s['status'] = 'SUCCESS'
+                try:
+                    srv = self.cs.servers.get(s['id'])
+                    s['build_status'] = srv.status
+                    s['build_time'] = s['build_time'] + self.check_interval
+                    if s['status'] != 'SUCCESS':
+                        if srv.status == "ACTIVE":
+                            logging.info("Build complete for %s %s" %
+                                         (srv.name, srv.id))
+                            s['primary_ip'] = srv.accessIPv4
+                            if self.health_check(srv.accessIPv4):
+                                success = success + 1
+                                s['status'] = 'SUCCESS'
+                            else:
+                                s['status'] = 'FAILED'
+                                failed = failed + 1
+                                if self.delete_failed:
+                                    srv.delete()
+                                self.build_one()
                         else:
-                            s['status'] = 'FAILED'
-                            failed = failed + 1
-                            if self.delete_failed:
-                                srv.delete()
-                            self.build_one()
-                    else:
-                        if s['build_time'] >= self.build_timeout:
-                            logging.info("Build timeout reached for %s %s"
-                                         % (srv.name, srv.id))
-                            logging.info("Deleting server %s" % (srv.id))
-                            if self.delete_failed:
-                                srv.delete()
-                            s['status'] = 'FAILED'
-                            failed = failed + 1
-                            self.build_one()
-                if success == self.desired_count:
-                    logging.info("Desired count reached %d"
-                                 % (self.desired_count))
-                    print ("Desired count reached %d"
-                           % (self.desired_count))
-                    self.cleanup_build()
-                    return
-                # except Exception as e:
-                #     logging.debug("Caught server not found exception")
-                #     continue
+                            if s['build_time'] >= self.build_timeout:
+                                logging.info("Build timeout reached for %s %s"
+                                             % (srv.name, srv.id))
+                                logging.info("Deleting server %s" % (srv.id))
+                                if self.delete_failed:
+                                    srv.delete()
+                                s['status'] = 'FAILED'
+                                failed = failed + 1
+                                self.build_one()
+                    if success == self.desired_count:
+                        logging.info("Desired count reached %d"
+                                     % (self.desired_count))
+                        print ("Desired count reached %d"
+                               % (self.desired_count))
+                        self.cleanup_build()
+                        return
+                except (novaclient.exceptions.NotFound, pyrax.exceptions.NotFound) as err:
+                    logging.debug("Caught novaclient.exceptions.NotFound exception for %s"
+                                  % (s['id']))
+                    continue
                 time.sleep(self.check_interval)
                 ctr = ctr + self.check_interval
         if ctr >= self.total_timeout:
