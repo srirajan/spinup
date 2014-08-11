@@ -348,13 +348,12 @@ class spinup:
 def print_usage():
     print "usage: spinup "
     print "Arguments: "
-    "--help     : This help"
-    "--username : Rackspace Cloud username or environment variable OS_USERNAME"
-    "--apikey   : Rackspace Cloud API key or environment variable OS_PASSWORD"
-    "--region   : Rackspace Cloud region(ord,iad,lon,syd,hkg) or environment"
-    " variable OS_PASSWORD"
-    "--template : YAML template (use --templatehelp for more details)"
-    "--templatehelp : Print detailed template help"
+    print "--help     : This help"
+    print "--template(required) : YAML template (use --templatehelp for more details)"
+    print "--username : Rackspace Cloud username or environment variable OS_USERNAME"
+    print "--apikey   : Rackspace Cloud API key or environment variable OS_PASSWORD"
+    print "--region   : Rackspace Cloud region or environment variable OS_PASSWORD"
+    print "--templatehelp : Print detailed template help"
 
 
 def template_help():
@@ -430,7 +429,7 @@ if __name__ == '__main__':
     parser.add_argument("--region", metavar="$OS_REGION_NAME",
                         help="Rackspace Cloud API key or environment "
                         "variable OS_REGION")
-    parser.add_argument("--template", metavar="", help="YAML template "
+    parser.add_argument("--template", help="YAML template "
                         "(use --templatehelp for more details)")
     parser.add_argument("--templatehelp", help="Print detailed "
                         "template help", action='store_true')
@@ -445,20 +444,22 @@ if __name__ == '__main__':
         stream = open(args.template, 'r')
         template_args = yaml.safe_load(stream)
     else:
-        logging.debug("Yaml template not provided on the command line.")
+        print ("Error: Yaml template not provided on the command line. Aborting.")
         print_usage()
-
-    if template_args['log_file']:
-        log_file = template_args['log_file']
-    else:
-        log_file = "spinup.log"
+        sys.exit(-1)
+    
+    log_file = "spinup.log"
+    if 'log_file' in template_args:
+        if template_args['log_file']:
+            log_file = template_args['log_file']
 
     log_level = logging.INFO
-    if template_args['log_level']:
-        if template_args['log_level'] == 'debug':
-            log_level = logging.DEBUG
-        if template_args['log_level'] == 'info':
-            log_level = logging.INFO
+    if 'log_level' in template_args:
+        if template_args['log_level']:
+            if template_args['log_level'] == 'debug':
+                log_level = logging.DEBUG
+            if template_args['log_level'] == 'info':
+                log_level = logging.INFO
 
     logging.basicConfig(filename=log_file, level=log_level,
                         format='%(asctime)s [%(levelname)s] %(message)s')
