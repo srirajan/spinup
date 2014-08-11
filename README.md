@@ -7,6 +7,10 @@ Simple server spinup example using Pyrax and a yaml definition file
  - Delete if failed
  - Generate statistics
 
+Requirements:
+ - Tested on Python 2.7
+ - See requirements.txt for python modules
+
 Arguments:
 
 --help     : This help
