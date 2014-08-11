@@ -29,8 +29,8 @@ import prettytable
 import os.path
 import urllib2
 import hashlib
-from novaclient.exceptions import NotFound
-from pyrax.exceptions import NotFound
+import novaclient.exceptions
+import pyrax.exceptions
 
 
 class spinup:
@@ -124,15 +124,21 @@ class spinup:
                             logging.info("Build complete for %s %s" %
                                          (srv.name, srv.id))
                             s['primary_ip'] = srv.accessIPv4
-                            if self.health_check(srv.accessIPv4):
-                                success = success + 1
-                                s['status'] = 'SUCCESS'
-                            else:
-                                s['status'] = 'FAILED'
-                                failed = failed + 1
-                                if self.delete_failed:
-                                    srv.delete()
-                                self.build_one()
+                            run_health_check = False
+                            if 'rackconnect' in self.template_args['server']:
+                                if self.template_args['server']['rackconnect']:
+                                    if self.get_rackconnect_status(srv):
+                                        run_health_check = True
+                            if run_health_check:
+                                if self.health_check(s['primary_ip']):
+                                    success = success + 1
+                                    s['status'] = 'SUCCESS'
+                                else:
+                                    s['status'] = 'FAILED'
+                                    failed = failed + 1
+                                    if self.delete_failed:
+                                        srv.delete()
+                                    self.build_one()
                         else:
                             if s['build_time'] >= self.build_timeout:
                                 logging.info("Build timeout reached for %s %s"
@@ -331,8 +337,12 @@ class spinup:
                 return img.name
         return 'NOTFOUND'
 
-    def get_rackconnect_ip(self):
-        print "__NOT_IMPLEMENTED__"
+    def get_rackconnect_status(self, srv):
+        for key, value in srv.metadata.items() :
+            if key == 'rackconnect_automation_status':
+                if value == 'DEPLOYED':
+                    return True
+        return False
 
 
 def print_usage():
